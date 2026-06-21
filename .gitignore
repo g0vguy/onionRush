@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+*.swp
+*.swo
+*.7z
+*.zip
+*.bin
+*.part
+*.tmp
+/.vscode
+/.idea
+*.exe
+*.pdb
