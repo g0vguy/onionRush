@@ -2,6 +2,15 @@
 name = "onionRush"
 version = "0.1.0"
 edition = "2024"
+authors = ["g0vguy <iilinux@proton.me>"]
+license = "MIT"
+description = "Parallel multi-circuit downloader over Tor"
+homepage = "https://github.com/g0vguy/onionRush"
+repository = "https://github.com/g0vguy/onionRush"
+documentation = "https://github.com/g0vguy/onionRush/blob/main/README.md"
+readme = "README.md"
+keywords = ["tor", "download", "parallel", "anonymity", "socks5"]
+categories = ["network-programming", "command-line-utilities"]
 
 [[bin]]
 name = "onionRush"
