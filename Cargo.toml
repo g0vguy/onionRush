@@ -1,24 +1,19 @@
 [package]
 name = "onionRush"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
-authors = ["g0vguy <iilinux@proton.me>"]
+authors = ["g0vguy"]
 license = "MIT"
-description = "Parallel multi-circuit downloader over Tor"
+description = "Parallel multi-circuit downloader and uploader over Tor."
 homepage = "https://github.com/g0vguy/onionRush"
 repository = "https://github.com/g0vguy/onionRush"
-documentation = "https://github.com/g0vguy/onionRush/blob/main/README.md"
 readme = "README.md"
-keywords = ["tor", "download", "parallel", "anonymity", "socks5"]
+keywords = ["tor", "download", "upload", "parallel", "anonymity", "opsec", "socks5"]
 categories = ["network-programming", "command-line-utilities"]
-
-[[bin]]
-name = "onionRush"
-path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.11", default-features = false, features = ["socks", "rustls-tls", "stream"] }
+reqwest = { version = "0.11", default-features = false, features = ["socks", "rustls-tls", "stream", "multipart"] }
 clap = { version = "~4.5", features = ["derive"] }
 anyhow = "1"
 indicatif = "0.17"
@@ -27,6 +22,12 @@ futures = "0.3"
 bytes = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = "0.4"
+uuid = { version = "1.0", features = ["v4"] }
+sha2 = "0.10"
+hex = "0.4"
 
 [profile.release]
 opt-level = 3

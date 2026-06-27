@@ -1,4 +1,4 @@
-use crate::args::Args;
+use crate::args::DownloadArgs;
 use crate::chunker::Chunk;
 use crate::proxy;
 use anyhow::{anyhow, Result};
@@ -8,10 +8,12 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt, SeekFrom};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
+
+const STALL_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub async fn download_chunk(
-    args: &Args,
+    args: &DownloadArgs,
     url: &str,
     chunk: &Chunk,
     out_path: &Path,
@@ -30,12 +32,10 @@ pub async fn download_chunk(
                 current_start,
                 (bytes_written as f64 / (chunk.end - chunk.start + 1) as f64) * 100.0
             );
-            pb.set_message(format!("resuming at {:.1}%", 
-                (bytes_written as f64 / (chunk.end - chunk.start + 1) as f64) * 100.0));
         }
 
         let identity = proxy::random_identity();
-        let client = match proxy::build_client(&args.socks, &identity, Duration::from_secs(args.timeout)) {
+        let client = match proxy::build_client(&args.socks, &identity, Duration::from_secs(args.timeout), false) {
             Ok(c) => c,
             Err(e) => {
                 last_err = Some(e);
@@ -50,7 +50,7 @@ pub async fn download_chunk(
             return Ok(());
         };
 
-        match attempt_chunk(&client, args, url, &range, chunk, current_start, out_path, pb, &mut bytes_written).await {
+        match attempt_chunk(&client, url, &range, chunk, current_start, out_path, pb, &mut bytes_written).await {
             Ok(()) => {
                 pb.finish_with_message("[+] done");
                 return Ok(());
@@ -60,19 +60,17 @@ pub async fn download_chunk(
                 pb.set_message(err_msg.clone());
                 warn!("[!] {}", err_msg);
                 last_err = Some(e);
-                
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
     }
 
     error!("[-] Chunk {} failed after {} retries", chunk.index, args.retries);
-    Err(last_err.unwrap_or_else(|| anyhow!("chunk {} failed with no error recorded", chunk.index)))
+    Err(last_err.unwrap_or_else(|| anyhow!("chunk {} failed", chunk.index)))
 }
 
 async fn attempt_chunk(
     client: &reqwest::Client,
-    args: &Args,
     url: &str,
     range: &str,
     chunk: &Chunk,
@@ -81,13 +79,12 @@ async fn attempt_chunk(
     pb: &ProgressBar,
     total_written: &mut u64,
 ) -> Result<()> {
-    debug!("[*] Requesting range: {}", range);
-
     let resp = client
         .get(url)
         .header(reqwest::header::RANGE, range)
         .header(reqwest::header::CONNECTION, "keep-alive")
         .header(reqwest::header::ACCEPT_ENCODING, "identity")
+        .header("X-Request-ID", uuid::Uuid::new_v4().to_string())
         .send()
         .await
         .map_err(|e| anyhow!("request failed: {}", e))?;
@@ -103,78 +100,34 @@ async fn attempt_chunk(
     let expected = chunk.end - start_byte + 1;
     let mut written = 0u64;
     let mut stream = resp.bytes_stream();
-    let mut last_progress_update = std::time::Instant::now();
-    let mut consecutive_timeouts = 0;
 
-    while let Some(result) = stream.next().await {
-        // Check for data stall - only fail if no data for 60 seconds
-        if last_progress_update.elapsed() > Duration::from_secs(60) {
-            return Err(anyhow!("data stall: no data received for 60 seconds"));
-        }
-
-        // Process the data with a 10 second timeout per chunk
-        let piece = match tokio::time::timeout(Duration::from_secs(10), async {
-            result.map_err(|e| anyhow!("stream error: {}", e))
-        }).await {
-            Ok(Ok(p)) => {
-                consecutive_timeouts = 0;
-                p
-            },
-            Ok(Err(e)) => return Err(e),
+    loop {
+        let next = match tokio::time::timeout(STALL_TIMEOUT, stream.next()).await {
+            Ok(Some(result)) => result.map_err(|e| anyhow!("stream error: {}", e))?,
+            Ok(None) => break, // stream ended normally
             Err(_) => {
-                consecutive_timeouts += 1;
-                if consecutive_timeouts > 5 {
-                    return Err(anyhow!("too many consecutive timeouts (5)"));
-                }
-                continue;
+                return Err(anyhow!(
+                    "data stall: no data received in {}s",
+                    STALL_TIMEOUT.as_secs()
+                ))
             }
         };
 
-        // Write the data
-        file.write_all(&piece).await?;
-        written += piece.len() as u64;
-        *total_written += piece.len() as u64;
-        pb.inc(piece.len() as u64);
-        
-        // Update progress tracking
-        last_progress_update = std::time::Instant::now();
-        
-        // Check if we've downloaded more than expected
+        file.write_all(&next).await?;
+        written += next.len() as u64;
+        *total_written += next.len() as u64;
+        pb.inc(next.len() as u64);
+
         if written > expected {
             return Err(anyhow!("received more data than expected: {} > {}", written, expected));
         }
-        
-        // Log progress every 10%
-        let percent = (written as f64 / expected as f64) * 100.0;
-        if percent % 10.0 < 1.0 && written > 0 {
-            debug!("[*] Chunk {}: {:.1}% complete", chunk.index, percent);
-        }
     }
 
-    // Force sync to disk
     file.sync_all().await?;
 
-    // Final verification
     if written != expected {
-        return Err(anyhow!(
-            "incomplete download: got {} of {} bytes ({}% complete)",
-            written,
-            expected,
-            (written as f64 / expected as f64) * 100.0
-        ));
+        return Err(anyhow!("incomplete: got {} of {} bytes", written, expected));
     }
 
-    debug!("[+] Chunk {} completed successfully", chunk.index);
     Ok(())
-}
-
-pub async fn verify_chunk(out_path: &Path, chunk: &Chunk) -> Result<bool> {
-    let file = tokio::fs::File::open(out_path).await?;
-    let metadata = file.metadata().await?;
-    
-    if metadata.len() <= chunk.end {
-        return Ok(false);
-    }
-    
-    Ok(true)
 }
