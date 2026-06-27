@@ -8,7 +8,7 @@ description = "Parallel multi-circuit downloader and uploader over Tor."
 homepage = "https://github.com/g0vguy/onionRush"
 repository = "https://github.com/g0vguy/onionRush"
 readme = "README.md"
-keywords = ["tor", "download", "upload", "parallel", "anonymity", "opsec", "socks5"]
+keywords = ["tor", "parallel", "anonymity", "opsec", "socks5"]
 categories = ["network-programming", "command-line-utilities"]
 
 [dependencies]

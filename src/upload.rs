@@ -1,6 +1,6 @@
 use crate::args::UploadArgs;
 use crate::proxy;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use rand::seq::SliceRandom;
 use rand::Rng;
