@@ -50,7 +50,7 @@ pub async fn download_chunk(
             return Ok(());
         };
 
-        match attempt_chunk(&client, url, &range, chunk, current_start, out_path, pb, &mut bytes_written).await {
+        match attempt_chunk(&client, url, &range, chunk, current_start, out_path, pb, &mut bytes_written, args).await {
             Ok(()) => {
                 pb.finish_with_message("[+] done");
                 return Ok(());
@@ -78,13 +78,35 @@ async fn attempt_chunk(
     out_path: &Path,
     pb: &ProgressBar,
     total_written: &mut u64,
+    args: &DownloadArgs,
 ) -> Result<()> {
-    let resp = client
+    let mut req = client
         .get(url)
         .header(reqwest::header::RANGE, range)
         .header(reqwest::header::CONNECTION, "keep-alive")
         .header(reqwest::header::ACCEPT_ENCODING, "identity")
-        .header("X-Request-ID", uuid::Uuid::new_v4().to_string())
+        .header("X-Request-ID", uuid::Uuid::new_v4().to_string());
+
+    // Custom User-Agent
+    if let Some(ua) = &args.user_agent {
+        req = req.header(reqwest::header::USER_AGENT, ua);
+    }
+
+    // Custom headers (-H "Key: Value")
+    if let Some(headers) = &args.headers {
+        for h in headers {
+            if let Some((key, val)) = h.split_once(':') {
+                req = req.header(key.trim(), val.trim());
+            }
+        }
+    }
+
+    if let Some(cookies) = &args.cookie {
+        let cookie_str = cookies.join("; ");
+        req = req.header(reqwest::header::COOKIE, cookie_str);
+    }
+
+    let resp = req
         .send()
         .await
         .map_err(|e| anyhow!("request failed: {}", e))?;

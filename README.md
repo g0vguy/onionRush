@@ -98,6 +98,9 @@ onionRush download [OPTIONS] <URL>
 | `-r, --retries <NUM>` | Retries per chunk | 4 |
 | `-t, --timeout <SEC>` | Per-request timeout in seconds | 120 |
 | `--chunk-size-mb <MB>` | Chunk size in MB (overrides `--circuits`) | Auto |
+| `-H, --header <KEY: VALUE>` | Extra request header (repeatable) | None |
+| `--cookie <VALUE>` | Cookie string, e.g. `session=abc` (repeatable) | None |
+| `--user-agent <UA>` | Override the User-Agent header | Random |
 | `-v, --verbose` | Verbose logging | Disabled |
 
 #### Examples
@@ -114,6 +117,15 @@ onionRush download http://example.onion/file.zip --chunk-size-mb 1024
 
 # Verbose with increased timeout and retries
 onionRush download http://example.onion/file.zip -v --timeout 300 -r 10
+
+# Custom auth header and cookie
+onionRush download http://example.onion/file.zip \
+  -H "Authorization: Bearer <token>" \
+  --cookie "session=abc123"
+
+# Custom User-Agent
+onionRush download http://example.onion/file.zip \
+  --user-agent "Mozilla/5.0 (compatible; mybot/1.0)"
 ```
 
 ---

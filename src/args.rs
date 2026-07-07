@@ -35,6 +35,18 @@ pub struct DownloadArgs {
     #[arg(long)]
     pub chunk_size_mb: Option<u64>,
 
+    /// Extra request headers, e.g. -H "Authorization: Bearer token" (repeatable)
+    #[arg(short = 'H', long = "header")]
+    pub headers: Option<Vec<String>>,
+
+    /// Cookie string(s), e.g. --cookie "session=abc123" (repeatable)
+    #[arg(long)]
+    pub cookie: Option<Vec<String>>,
+
+    /// Override the User-Agent header
+    #[arg(long)]
+    pub user_agent: Option<String>,
+
     #[arg(short, long)]
     pub verbose: bool,
 }
