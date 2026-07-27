@@ -1,7 +1,12 @@
 use clap::{Parser, Subcommand};
 
+pub const DEFAULT_CIRCUITS: usize = 8;
+pub const DEFAULT_SOCKS: &str = "127.0.0.1:9050";
+pub const DEFAULT_RETRIES: u32 = 4;
+pub const DEFAULT_TIMEOUT: u64 = 120;
+
 #[derive(Parser, Debug, Clone)]
-#[command(name = "onionRush", version = "1.0.0", about = "Parallel multi-circuit downloader and uploader over Tor")]
+#[command(name = "onionRush", version, about = "Parallel multi-circuit downloader and uploader over Tor")]
 pub struct Args {
     #[command(subcommand)]
     pub command: Commands,
@@ -20,17 +25,21 @@ pub struct DownloadArgs {
     #[arg(short, long)]
     pub output: Option<String>,
 
-    #[arg(short = 'n', long, default_value_t = 8)]
-    pub circuits: usize,
+    /// Number of parallel circuits/chunks (default: 8, overridable via --config)
+    #[arg(short = 'n', long)]
+    pub circuits: Option<usize>,
 
-    #[arg(long, default_value = "127.0.0.1:9050")]
-    pub socks: String,
+    /// Tor SOCKS5 proxy address (default: 127.0.0.1:9050, overridable via --config)
+    #[arg(long)]
+    pub socks: Option<String>,
 
-    #[arg(short, long, default_value_t = 4)]
-    pub retries: u32,
+    /// Retries per chunk before giving up (default: 4, overridable via --config)
+    #[arg(short, long)]
+    pub retries: Option<u32>,
 
-    #[arg(short, long, default_value_t = 120)]
-    pub timeout: u64,
+    /// Per-request timeout in seconds (default: 120, overridable via --config)
+    #[arg(short, long)]
+    pub timeout: Option<u64>,
 
     #[arg(long)]
     pub chunk_size_mb: Option<u64>,
@@ -47,8 +56,57 @@ pub struct DownloadArgs {
     #[arg(long)]
     pub user_agent: Option<String>,
 
+    /// Expected SHA-256 of the completed file. Optional - not every host publishes one.
+    #[arg(long)]
+    pub sha256: Option<String>,
+
+    #[arg(long)]
+    pub config: Option<String>,
+
     #[arg(short, long)]
     pub verbose: bool,
+
+    #[arg(short = 'q', long)]
+    pub quiet: bool,
+}
+
+impl DownloadArgs {
+    pub fn circuits(&self) -> usize {
+        self.circuits.unwrap_or(DEFAULT_CIRCUITS)
+    }
+
+    pub fn socks(&self) -> &str {
+        self.socks.as_deref().unwrap_or(DEFAULT_SOCKS)
+    }
+
+    pub fn retries(&self) -> u32 {
+        self.retries.unwrap_or(DEFAULT_RETRIES)
+    }
+
+    pub fn timeout(&self) -> u64 {
+        self.timeout.unwrap_or(DEFAULT_TIMEOUT)
+    }
+
+    pub fn apply_config(&mut self, config: &crate::config::ConfigFile) {
+        if self.circuits.is_none() {
+            self.circuits = config.circuits;
+        }
+        if self.socks.is_none() {
+            self.socks = config.socks.clone();
+        }
+        if self.retries.is_none() {
+            self.retries = config.retries;
+        }
+        if self.timeout.is_none() {
+            self.timeout = config.timeout;
+        }
+        if self.chunk_size_mb.is_none() {
+            self.chunk_size_mb = config.chunk_size_mb;
+        }
+        if self.user_agent.is_none() {
+            self.user_agent = config.user_agent.clone();
+        }
+    }
 }
 
 #[derive(Parser, Debug, Clone)]

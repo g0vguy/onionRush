@@ -4,6 +4,7 @@ use crate::proxy;
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use indicatif::ProgressBar;
+use rand::Rng;
 use std::path::Path;
 use std::time::Duration;
 use tokio::fs::OpenOptions;
@@ -23,7 +24,9 @@ pub async fn download_chunk(
     let mut current_start = chunk.start;
     let mut bytes_written = 0u64;
 
-    for attempt in 1..=args.retries {
+    let retries = args.retries();
+
+    for attempt in 1..=retries {
         if attempt > 1 && bytes_written > 0 {
             current_start = chunk.start + bytes_written;
             info!(
@@ -35,7 +38,7 @@ pub async fn download_chunk(
         }
 
         let identity = proxy::random_identity();
-        let client = match proxy::build_client(&args.socks, &identity, Duration::from_secs(args.timeout), false) {
+        let client = match proxy::build_client(args.socks(), &identity, Duration::from_secs(args.timeout()), false) {
             Ok(c) => c,
             Err(e) => {
                 last_err = Some(e);
@@ -56,17 +59,36 @@ pub async fn download_chunk(
                 return Ok(());
             },
             Err(e) => {
-                let err_msg = format!("chunk {} retry {}/{}: {}", chunk.index, attempt, args.retries, e);
+                let err_msg = format!("chunk {} retry {}/{}: {}", chunk.index, attempt, retries, e);
                 pb.set_message(err_msg.clone());
                 warn!("[!] {}", err_msg);
                 last_err = Some(e);
-                tokio::time::sleep(Duration::from_secs(5)).await;
+
+                if attempt < retries {
+                    let delay = backoff_delay(attempt);
+                    info!("[*] chunk {} backing off {:.1}s before retry", chunk.index, delay.as_secs_f64());
+                    tokio::time::sleep(delay).await;
+                }
             }
         }
     }
 
-    error!("[-] Chunk {} failed after {} retries", chunk.index, args.retries);
+    error!("[-] Chunk {} failed after {} retries", chunk.index, retries);
     Err(last_err.unwrap_or_else(|| anyhow!("chunk {} failed", chunk.index)))
+}
+
+
+fn backoff_delay(attempt: u32) -> Duration {
+    const BASE_SECS: f64 = 2.0;
+    const MAX_SECS: f64 = 60.0;
+
+    let exp = BASE_SECS * 2f64.powi(attempt as i32 - 1);
+    let capped = exp.min(MAX_SECS);
+
+    let mut rng = rand::thread_rng();
+    let jittered = rng.gen_range((capped * 0.5)..=capped);
+
+    Duration::from_secs_f64(jittered)
 }
 
 async fn attempt_chunk(

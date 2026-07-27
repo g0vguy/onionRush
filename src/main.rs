@@ -2,6 +2,7 @@
 
 mod args;
 mod chunker;
+mod config;
 mod download;
 mod proxy;
 mod resume;
@@ -14,8 +15,14 @@ use std::path::PathBuf;
 use tracing::{error, warn};
 use tracing_subscriber;
 
-fn setup_logging(verbose: bool) {
-    let env_filter = if verbose { "debug" } else { "info" };
+fn setup_logging(verbose: bool, quiet: bool) {
+    let env_filter = if verbose {
+        "debug"
+    } else if quiet {
+        "error"
+    } else {
+        "info"
+    };
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_target(false)
@@ -40,16 +47,28 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     match args.command {
-        Commands::Download(dl_args) => {
-            setup_logging(dl_args.verbose);
-            println!("[+] onionRush v1.0.0 :: Download mode");
+        Commands::Download(mut dl_args) => {
+            if dl_args.quiet && dl_args.verbose {
+                return Err(anyhow!("--quiet and --verbose cannot be used together"));
+            }
+            let quiet = dl_args.quiet;
+
+            setup_logging(dl_args.verbose, quiet);
+
+            let file_config = config::ConfigFile::load(&dl_args.config)
+                .context("failed to load config file")?;
+            dl_args.apply_config(&file_config);
+
+            if !quiet {
+                println!("[+] onionRush v{} :: Download mode", env!("CARGO_PKG_VERSION"));
+            }
 
             let out_path = output_path(&dl_args.url, &dl_args.output);
 
             let probe_client = proxy::build_client(
-                &dl_args.socks,
+                dl_args.socks(),
                 &proxy::random_identity(),
-                std::time::Duration::from_secs(dl_args.timeout),
+                std::time::Duration::from_secs(dl_args.timeout()),
                 false,
             )?;
 
@@ -57,16 +76,18 @@ async fn main() -> Result<()> {
                 .await
                 .context("failed to reach target host - is it online and is the SOCKS proxy reachable?")?;
 
-            println!("[+] size: {} bytes ({:.2} GB), range support: {}",
-                target.size,
-                target.size as f64 / (1024.0 * 1024.0 * 1024.0),
-                target.accepts_ranges
-            );
+            if !quiet {
+                println!("[+] size: {} bytes ({:.2} GB), range support: {}",
+                    target.size,
+                    target.size as f64 / (1024.0 * 1024.0 * 1024.0),
+                    target.accepts_ranges
+                );
+            }
 
             let planned_chunks = if let Some(chunk_size_mb) = dl_args.chunk_size_mb {
                 chunker::plan_chunks_by_size(target.size, chunk_size_mb)
             } else {
-                chunker::plan_chunks(target.size, dl_args.circuits)
+                chunker::plan_chunks(target.size, dl_args.circuits())
             };
 
             let mut manifest = match resume::Manifest::load(&out_path) {
@@ -75,11 +96,15 @@ async fn main() -> Result<()> {
                         && m.total_size == target.size
                         && m.chunk_layout_matches(&planned_chunks) =>
                 {
-                    println!("[*] Found resume state from a previous run, verifying integrity...");
+                    if !quiet {
+                        println!("[*] Found resume state from a previous run, verifying integrity...");
+                    }
                     m
                 }
                 Some(_) => {
-                    println!("[!] Resume state found but doesn't match this run (URL, remote size, or chunk layout changed). Starting fresh.");
+                    if !quiet {
+                        println!("[!] Resume state found but doesn't match this run (URL, remote size, or chunk layout changed). Starting fresh.");
+                    }
                     resume::Manifest::delete(&out_path);
                     resume::Manifest::fresh(&dl_args.url, &out_path, target.size, &planned_chunks)
                 }
@@ -91,7 +116,7 @@ async fn main() -> Result<()> {
                 && std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0) == target.size;
 
             if !file_ok {
-                if manifest.chunks.iter().any(|c| c.completed) {
+                if !quiet && manifest.chunks.iter().any(|c| c.completed) {
                     println!("[!] Output file missing or wrong size; discarding resume state.");
                 }
                 let file = std::fs::File::create(&out_path)
@@ -106,7 +131,9 @@ async fn main() -> Result<()> {
                     match resume::hash_range(&out_path, cs.start, cs.end).await {
                         Ok(h) if Some(&h) == cs.sha256.as_ref() => {}
                         _ => {
-                            println!("[!] Chunk {} failed integrity check, will be re-downloaded", cs.index);
+                            if !quiet {
+                                println!("[!] Chunk {} failed integrity check, will be re-downloaded", cs.index);
+                            }
                             cs.completed = false;
                             cs.sha256 = None;
                         }
@@ -121,7 +148,7 @@ async fn main() -> Result<()> {
                 .collect();
 
             let already_done = manifest.chunks.iter().filter(|c| c.completed).count();
-            if already_done > 0 {
+            if already_done > 0 && !quiet {
                 println!(
                     "[*] Resuming: {} of {} chunks already verified complete, {} remaining",
                     already_done,
@@ -133,15 +160,23 @@ async fn main() -> Result<()> {
             let mut failures = 0;
 
             if pending.is_empty() {
-                println!("[+] All chunks already complete and verified.");
+                if !quiet {
+                    println!("[+] All chunks already complete and verified.");
+                }
             } else {
-                println!("[*] Downloading {} chunk(s)", pending.len());
+                if !quiet {
+                    println!("[*] Downloading {} chunk(s)", pending.len());
+                }
 
                 let multi = indicatif::MultiProgress::new();
                 let mut set = tokio::task::JoinSet::new();
 
                 for chunk in pending {
-                    let pb = multi.add(indicatif::ProgressBar::new(chunk.end - chunk.start + 1));
+                    let pb = if quiet {
+                        indicatif::ProgressBar::hidden()
+                    } else {
+                        multi.add(indicatif::ProgressBar::new(chunk.end - chunk.start + 1))
+                    };
                     pb.set_style(style());
                     pb.set_prefix(format!("chunk {}", chunk.index));
 
@@ -194,12 +229,14 @@ async fn main() -> Result<()> {
                             failures += 1;
                         }
                     }
-                    if total > 0 {
+                    if total > 0 && !quiet {
                         let progress = (completed + failures) as f64 / total as f64 * 100.0;
                         eprint!("\r[*] Progress: {:.1}% ({} completed, {} failed)", progress, completed, failures);
                     }
                 }
-                eprintln!();
+                if !quiet {
+                    eprintln!();
+                }
             }
 
             if failures > 0 {
@@ -215,17 +252,39 @@ async fn main() -> Result<()> {
                 return Err(anyhow!("File size mismatch: expected {}, got {}", target.size, metadata.len()));
             }
 
+            if let Some(expected) = &dl_args.sha256 {
+                if !quiet {
+                    println!("[*] Verifying SHA-256 checksum...");
+                }
+                let actual = resume::hash_range(&out_path, 0, target.size - 1)
+                    .await
+                    .context("failed to hash completed file for --sha256 verification")?;
+
+                if !actual.eq_ignore_ascii_case(expected) {
+                    return Err(anyhow!(
+                        "SHA-256 mismatch: expected {}, got {} -- file may be corrupt or the hash you supplied is wrong",
+                        expected,
+                        actual
+                    ));
+                }
+                if !quiet {
+                    println!("[+] SHA-256 verified: {}", actual);
+                }
+            }
+
             resume::Manifest::delete(&out_path);
 
             println!("[+] Download complete! File saved to: {:?}", out_path);
-            println!("[+] Total size: {} bytes ({:.2} GB)",
-                target.size,
-                target.size as f64 / (1024.0 * 1024.0 * 1024.0)
-            );
+            if !quiet {
+                println!("[+] Total size: {} bytes ({:.2} GB)",
+                    target.size,
+                    target.size as f64 / (1024.0 * 1024.0 * 1024.0)
+                );
+            }
         }
         Commands::Upload(up_args) => {
-            setup_logging(up_args.verbose);
-            println!("[+] onionRush v1.0.0 :: Upload mode");
+            setup_logging(up_args.verbose, false);
+            println!("[+] onionRush v{} :: Upload mode", env!("CARGO_PKG_VERSION"));
             println!("[!] WARNING: This tool is for educational purposes only");
             println!("[!] Ensure you have permission to upload to the target");
 

@@ -5,7 +5,7 @@ Parallel multi-circuit downloader and uploader over Tor for high-speed anonymous
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Tor](https://img.shields.io/badge/Tor-Compatible-purple.svg)](https://www.torproject.org/)
-[![Version](https://img.shields.io/badge/version-1.0.0-green.svg)](https://github.com/g0vguy/onionRush)
+[![Version](https://img.shields.io/badge/version-1.1.0-green.svg)](https://github.com/g0vguy/onionRush)
 
 ## Features
 
@@ -14,9 +14,12 @@ Parallel multi-circuit downloader and uploader over Tor for high-speed anonymous
 - **Tor Circuit Isolation**: Each chunk uses a unique SOCKS5 auth identity for separate circuits
 - **Resume Support**: Interrupted downloads resume from the last verified chunk
 - **Stall Detection**: Automatically detects and recovers from stalled connections
+- **Exponential Backoff**: Jittered exponential backoff between chunk retries instead of a fixed delay, so failed chunks don't all hammer the proxy in lockstep
 - **Multi-Progress Bars**: Real-time per-chunk progress display
-- **Integrity Verification**: SHA-256 per-chunk hashing and file size validation
+- **Integrity Verification**: SHA-256 per-chunk hashing and file size validation, plus an *optional* whole-file `--sha256` check against a known-good hash
 - **Flexible Chunking**: Fixed chunk count or custom chunk size in MB
+- **Config File**: Set default socks/circuits/retries/timeout/chunk-size/user-agent via `--config` or `~/.onionrush.toml`
+- **Quiet Mode**: `-q, --quiet` suppresses progress bars and informational output, leaving only the final result and errors
 
 ### Upload
 - **Parallel Uploads**: Chunked multipart upload across multiple Tor streams
@@ -64,6 +67,7 @@ cargo install onionRush
 - [Tor](https://www.torproject.org/) running with SOCKS5 proxy enabled
 - Tor configured with `IsolateSOCKSAuth` (default on most distributions)
 - *(Optional)* [`mat2`](https://0xacab.org/jvoisin/mat2) for metadata stripping on upload
+- *(Optional)* A `~/.onionrush.toml` config file for download defaults — see [Config File](#config-file) below
 
 ### Tor Configuration
 
@@ -93,15 +97,18 @@ onionRush download [OPTIONS] <URL>
 | Option | Description | Default |
 |--------|-------------|---------|
 | `-o, --output <PATH>` | Output file path | Filename from URL |
-| `-n, --circuits <NUM>` | Number of parallel circuits/chunks | 8 |
-| `--socks <ADDR>` | Tor SOCKS5 proxy address | 127.0.0.1:9050 |
-| `-r, --retries <NUM>` | Retries per chunk | 4 |
-| `-t, --timeout <SEC>` | Per-request timeout in seconds | 120 |
-| `--chunk-size-mb <MB>` | Chunk size in MB (overrides `--circuits`) | Auto |
+| `-n, --circuits <NUM>` | Number of parallel circuits/chunks | 8 (or `--config`) |
+| `--socks <ADDR>` | Tor SOCKS5 proxy address | 127.0.0.1:9050 (or `--config`) |
+| `-r, --retries <NUM>` | Retries per chunk, with jittered exponential backoff between attempts | 4 (or `--config`) |
+| `-t, --timeout <SEC>` | Per-request timeout in seconds | 120 (or `--config`) |
+| `--chunk-size-mb <MB>` | Chunk size in MB (overrides `--circuits`) | Auto (or `--config`) |
 | `-H, --header <KEY: VALUE>` | Extra request header (repeatable) | None |
 | `--cookie <VALUE>` | Cookie string, e.g. `session=abc` (repeatable) | None |
-| `--user-agent <UA>` | Override the User-Agent header | Random |
+| `--user-agent <UA>` | Override the User-Agent header | Random (or `--config`) |
+| `--sha256 <HASH>` | Expected SHA-256 of the completed file. Optional — not every host publishes one. Verified after download; mismatch fails the run | None |
+| `--config <PATH>` | Path to a TOML config file with default values. Falls back to `~/.onionrush.toml` if present and this isn't given. CLI flags always win over the config file | None |
 | `-v, --verbose` | Verbose logging | Disabled |
+| `-q, --quiet` | Suppress progress bars and informational output; only the final result and errors print. Cannot be combined with `-v` | Disabled |
 
 #### Examples
 
@@ -126,6 +133,30 @@ onionRush download http://example.onion/file.zip \
 # Custom User-Agent
 onionRush download http://example.onion/file.zip \
   --user-agent "Mozilla/5.0 (compatible; mybot/1.0)"
+
+# Verify the completed file against a known hash
+onionRush download http://example.onion/file.zip \
+  --sha256 "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+# Use defaults from a config file, override just the circuit count
+onionRush download http://example.onion/file.zip --config ~/.onionrush.toml -n 32
+
+# Quiet mode for scripts/cron — only the final result or an error is printed
+onionRush download http://example.onion/file.zip -q
+```
+
+#### Config File
+
+`--config <PATH>` (or `~/.onionrush.toml` if present and no `--config` is given) sets defaults for `socks`, `circuits`, `retries`, `timeout`, `chunk_size_mb`, and `user_agent`. Any flag passed on the command line always overrides the config file.
+
+```toml
+# ~/.onionrush.toml
+socks = "127.0.0.1:9050"
+circuits = 16
+retries = 6
+timeout = 180
+chunk_size_mb = 512
+user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 ```
 
 ---
@@ -188,7 +219,7 @@ onionRush upload http://example.onion/upload --file archive.zip 10485760 \
 ## Output Example
 
 ```
-[+] onionRush v1.0.0 :: Download mode
+[+] onionRush v1.1.0 :: Download mode
 [+] size: 10737418240 bytes (10.00 GB), range support: true
 [*] Downloading 8 chunk(s)
    chunk 0 [==============================] 1.25 GiB/1.25 GiB 9.63 MiB/s 0s
@@ -204,6 +235,12 @@ onionRush upload http://example.onion/upload --file archive.zip 10485760 \
 [+] Total size: 10737418240 bytes (10.00 GB)
 ```
 
+With `-q, --quiet`:
+
+```
+[+] Download complete! File saved to: "file.zip"
+```
+
 ## Performance Tips
 
 1. **Circuits/Streams**: Start with `-n 8` for downloads, `-n 4` for uploads, and scale up
@@ -215,6 +252,7 @@ onionRush upload http://example.onion/upload --file archive.zip 10485760 \
 3. **Chunk Size**: Use `--chunk-size-mb` for large files to control memory usage
 4. **Timeouts**: Slow onion services may need `--timeout 300` or higher
 5. **Upload Pacing**: Use `--interval rand:mean=20,jitter=10` to blend into normal traffic patterns
+6. **Repeated Runs**: If you always use the same `--circuits`/`--socks`/`--timeout`, put them in `~/.onionrush.toml` instead of retyping flags every time
 
 ## Troubleshooting
 
@@ -241,6 +279,12 @@ onionRush upload http://example.onion/upload --file archive.zip 10485760 \
 - Use `--chunk-size-mb` for finer-grained chunks
 - Increase retries and timeout
 - The remote file may have changed during the download
+
+### "SHA-256 mismatch"
+
+- Only appears if you passed `--sha256`; the file downloaded fine and passed per-chunk verification, but the whole-file hash doesn't match what you supplied
+- Double-check the hash you were given actually corresponds to this file/version
+- If it still fails after a fresh re-download, the remote file itself may not match its published hash
 
 ### Upload isolation check warning
 
